@@ -17,43 +17,62 @@ const {
 
 const HELP = `Usage: ytup [OPTIONS] PATH...
 
-  Upload videos to YouTube from a folder tree. Each folder level can become a
-  playlist; uploads can be resumed and skipped, and a local upload log prevents
-  re-uploading files that were deleted from disk.
+  Upload videos from a folder tree to your own YouTube channel. Every folder
+  level up to --playlist-depth becomes a playlist, uploads are resumable, and a
+  local upload log prevents re-uploading files that were moved or deleted.
+
+Paths:
+  The first path may be a folder (its subfolders become playlists) or a file.
+  Extra paths are always files and are uploaded without a playlist.
 
 Options:
-  --playlist-depth N        Split the folder tree into playlists up to N levels
-                            deep (level-1 playlists use the folder name, nested
-                            ones "Parent / Child"). 0 disables playlists. [1]
-  --playlist-name MODE      leaf | path  ("path" joins parent folders) [leaf]
-  --playlist-prefix TEXT    Prefix added to every playlist name. [none]
-  --title-prefix TEXT       Prefix added to every video title. [none]
+  --playlist-depth N        Folder levels that become playlists (1..N). Each
+                            video goes to the deepest playlist that contains it;
+                            deeper folders roll up to level N. 0 uploads flat. [1]
+  --playlist-name MODE      leaf: folder name only | path: parents joined with
+                            --playlist-separator [leaf]
+  --playlist-separator TEXT Separator for --playlist-name path [" / "]
+  --playlist-prefix TEXT    Prefix added to every playlist name [none]
+  --title-prefix TEXT       Prefix added to every video title [none]
   --privacy VALUE           Video privacy: public | unlisted | private [unlisted]
-  --playlist-privacy VALUE  Playlist privacy: public | unlisted | private [unlisted]
-  --playlist-mode MODE      api (Data API, needs yt-oauth.js) | ui | off |
-                            auto (api when client_secret.json + token.json exist) [auto]
-  --sort [ORDER]            Sort files before upload: name_asc | name_desc |
-                            mtime_asc | mtime_desc | random [name_asc]
-  --skip                    Skip files already in the upload log [default].
-  --no-skip                 Re-upload even if the log says it was uploaded.
-  --sync                    Read the channel's video list from YouTube Studio
-                            and adopt videos that are already uploaded.
-  --sync-only               Sync and exit without uploading.
-  --sync-pages N            Pages of 30 videos to read when syncing [100].
-  --upload-log              Keep the upload log at <root>/.youtube-upload-log.json.
-  --upload-log-file FILE    Upload log path (implies --upload-log).
-  --delete-on-success       Delete each local file after it uploads.
-  --dry-run                 Show the playlists, titles and skips a run would
-                            produce. No browser, no API calls, no writes.
-  --headless                Run Chrome without a window [default: headless].
-  --headed                  Show the browser window.
-  --help                    Show this message.
+  --playlist-privacy VALUE  Playlist privacy: public | unlisted | private
+                            [unlisted]
+  --playlist-mode MODE      api: create/verify playlists and add videos with the
+                            YouTube Data API | ui: use Studio's existing
+                            playlists only | off: no playlist handling |
+                            auto: api when client_secret.json and token.json
+                            exist, otherwise ui [auto]
+  --sort [ORDER]            File order: name_asc | name_desc | mtime_asc |
+                            mtime_desc | random [name_asc]
+  --skip                    Skip files already in the upload log [default]
+  --no-skip                 Upload again even if the log says it was uploaded
+  --sync                    Compare the tree with the channel: adopt videos that
+                            are already uploaded, report log entries that are no
+                            longer on the channel
+  --sync-only               Sync and exit without uploading
+  --sync-pages N            Studio pages of 30 videos to read when the Data API
+                            is unavailable [100]
+  --upload-log-file FILE    Upload log path [<root>/.youtube-upload-log.json]
+  --delete-on-success       Delete each local file after it uploads
+  --dry-run                 Preview playlists, titles, skips and ignored files.
+                            No browser, no API calls, no writes
+  --headless                Run Chrome without a window [default]
+  --headed                  Show the browser window
+  --version                 Print the version
+  --help                    Show this message
+
+Environment:
+  CHROME_PATH               Chrome/Chromium binary [/usr/bin/google-chrome-unstable]
 `;
 
 const argv = process.argv.slice(2);
 if (!argv.length || argv.includes('--help')) {
   console.log(HELP);
   process.exit(argv.length ? 0 : 1);
+}
+if (argv.includes('--version')) {
+  console.log(require('./package.json').version);
+  process.exit(0);
 }
 
 const opts = { paths: [] };
@@ -69,7 +88,6 @@ for (let i = 0; i < argv.length; i++) {
   else if (arg === '--no-skip') opts.skip = false;
   else if (arg === '--sync') opts.sync = true;
   else if (arg === '--sync-only') { opts.sync = true; opts.syncOnly = true; }
-  else if (arg === '--upload-log') opts.uploadLog = true;
   else if (arg === '--delete-on-success') opts.deleteOnSuccess = true;
   else if (arg === '--dry-run') opts.dryRun = true;
   else if (arg === '--headless') opts.headless = true;
@@ -91,15 +109,16 @@ if (!opts.paths.length) {
 }
 
 if (opts.headless === undefined) opts.headless = true;
-// Skipping known uploads is the default: re-running a tree must never duplicate
-// videos. Use --no-skip to force a re-upload.
-if (opts.skip === undefined) opts.skip = true;
 
 async function main() {
   // A single input folder is the root; extra arguments are individual files.
   const first = opts.paths[0];
   const rootIsDir = fs.statSync(first).isDirectory();
   const config = loadConfig(path.join(process.cwd(), 'upload.config.json'));
+
+  // Skipping known uploads is the default: re-running a tree must never
+  // duplicate videos. Use --no-skip (or "skipAlreadyUploaded": false) to force.
+  if (opts.skip === undefined) opts.skip = config.skipAlreadyUploaded !== false;
 
   if (rootIsDir) config.root = path.resolve(first);
   else config.root = path.dirname(path.resolve(first));
@@ -124,7 +143,7 @@ async function main() {
   }
 
   const ledgerPath = path.resolve(
-    opts.uploadLogFile || path.join(config.root, '.youtube-upload-log.json')
+    opts.uploadLogFile || path.join(config.root, config.ledger || '.youtube-upload-log.json')
   );
   const logEnabled = true;
   const ledger = logEnabled ? loadLedger(ledgerPath) : { version: 1, records: [] };
@@ -132,7 +151,12 @@ async function main() {
   const hashCache = new Map();
 
   const plan = rootIsDir
-    ? buildPlan(config)
+    ? (() => {
+        const built = buildPlan(config);
+        // Extra file arguments next to the root folder are uploaded flat.
+        const extra = opts.paths.slice(1).map((p) => path.resolve(p));
+        return extra.length ? { ...built, orphans: [...built.orphans, ...extra] } : built;
+      })()
     : { playlists: [], orphans: opts.paths.map((p) => path.resolve(p)) };
 
   const groups = [
@@ -262,9 +286,11 @@ async function main() {
     for (const group of groups) {
       const skippedHere = skippedFiles.filter((entry) => entry.playlist === (group.name || ''));
       if (!group.files.length && !skippedHere.length) continue;
-      const heading = group.name ? `playlist "${group.name}"` : 'no playlist';
+      const heading = group.name
+        ? `${playlistMode === 'off' ? 'folder' : 'playlist'} "${group.name}"`
+        : 'no playlist';
       console.log(`\n[${heading}] ${group.files.length} to upload, ${skippedHere.length} skipped`);
-      if (group.name) {
+      if (group.name && playlistMode !== 'off') {
         console.log(
           `  playlist: ${
             playlistMode === 'api'
@@ -380,7 +406,7 @@ async function main() {
         description: config.description || '',
         publishType: config.videoPrivacy,
         isNotForKid: true,
-        playlist: playlistMode === 'api' ? undefined : group.name || undefined,
+        playlist: playlistMode === 'ui' ? group.name || undefined : undefined,
         playlistPrivacy: config.playlistPrivacy,
         onSuccess: (link) => {
           console.log(`  uploaded: ${link}`);

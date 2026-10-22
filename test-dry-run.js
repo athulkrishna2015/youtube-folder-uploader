@@ -212,6 +212,18 @@ test('single file arguments are previewed without a playlist', () => {
   assert.ok(result.out.includes('[no playlist] 2 to upload'), result.out);
 });
 
+test('extra files next to a root folder are uploaded flat', () => {
+  const root = tree('mixed');
+  writeFile(path.join(root, 'P/p1.mp4'));
+  const loose = path.join(work, 'standalone.mp4');
+  writeFile(loose);
+  const result = run(['--dry-run', '--playlist-depth', '1', root, loose]);
+  assert.strictEqual(result.status, 0, result.out);
+  assert.ok(result.out.includes('[playlist "P"] 1 to upload'), result.out);
+  assert.ok(result.out.includes('[no playlist] 1 to upload'), result.out);
+  assert.ok(result.out.includes('standalone.mp4'), result.out);
+});
+
 console.log(`\n${passed} passed, ${failures.length} failed`);
 if (failures.length) {
   console.log(`work dir kept for inspection: ${work}`);
