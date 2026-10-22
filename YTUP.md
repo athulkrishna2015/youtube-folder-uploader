@@ -160,6 +160,10 @@ Studio scraping otherwise) and:
 - **adopts** local files whose title already exists on the channel,
 - **reports** log entries whose videos are no longer on the channel.
 
+`node test-sync.js` covers the matching rules offline: case/whitespace-insensitive
+titles, no double adoption, duplicate titles, missing videos, and the
+path-independent skip key (a moved file still counts as uploaded).
+
 ## Playlist modes
 
 | Mode | Behaviour |
