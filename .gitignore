@@ -113,3 +113,13 @@ test
 .idea
 thumbnail.jpg
 script.js
+yt-profile/
+client_secret*.json
+token.json
+before-click.png
+playlist-*.png
+yt-profile*/
+before-click.png
+client_secret*.json
+token.json
+.opencode/

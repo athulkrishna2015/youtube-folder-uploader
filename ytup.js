@@ -1,0 +1,452 @@
+#!/usr/bin/env node
+// ytup — upload a folder tree to YouTube, one playlist per folder.
+// Mirrors the conventions of telegram-upload (--playlist-depth, --sort, --skip, --dry-run).
+const fs = require('fs');
+const path = require('path');
+const { loadConfig, buildPlan } = require('./tree-plan');
+const {
+  loadLedger,
+  saveLedger,
+  indexLedger,
+  isUploaded,
+  addRecord,
+  recordKey,
+  fileFingerprint,
+} = require('./ledger');
+// Loaded lazily so --dry-run works before `npx tsc -p .` has produced dist/.
+
+const HELP = `Usage: ytup [OPTIONS] PATH...
+
+  Upload videos to YouTube from a folder tree. Each folder level can become a
+  playlist; uploads can be resumed and skipped, and a local upload log prevents
+  re-uploading files that were deleted from disk.
+
+Options:
+  --playlist-depth N        Split the folder tree into playlists up to N levels
+                            deep (level-1 playlists use the folder name, nested
+                            ones "Parent / Child"). 0 disables playlists. [1]
+  --playlist-name MODE      leaf | path  ("path" joins parent folders) [leaf]
+  --playlist-prefix TEXT    Prefix added to every playlist name. [none]
+  --title-prefix TEXT       Prefix added to every video title. [none]
+  --privacy VALUE           Video privacy: public | unlisted | private [unlisted]
+  --playlist-privacy VALUE  Playlist privacy: public | unlisted | private [unlisted]
+  --playlist-mode MODE      api (Data API, needs yt-oauth.js) | ui | off |
+                            auto (api when client_secret.json + token.json exist) [auto]
+  --sort [ORDER]            Sort files before upload: name_asc | name_desc |
+                            mtime_asc | mtime_desc | random [name_asc]
+  --skip                    Skip files already in the upload log [default].
+  --no-skip                 Re-upload even if the log says it was uploaded.
+  --sync                    Read the channel's video list from YouTube Studio
+                            and adopt videos that are already uploaded.
+  --sync-only               Sync and exit without uploading.
+  --sync-pages N            Pages of 30 videos to read when syncing [100].
+  --upload-log              Keep the upload log at <root>/.youtube-upload-log.json.
+  --upload-log-file FILE    Upload log path (implies --upload-log).
+  --delete-on-success       Delete each local file after it uploads.
+  --dry-run                 Show the playlists, titles and skips a run would
+                            produce. No browser, no API calls, no writes.
+  --headless                Run Chrome without a window [default: headless].
+  --headed                  Show the browser window.
+  --help                    Show this message.
+`;
+
+const argv = process.argv.slice(2);
+if (!argv.length || argv.includes('--help')) {
+  console.log(HELP);
+  process.exit(argv.length ? 0 : 1);
+}
+
+const opts = { paths: [] };
+const takesValue = new Set([
+  '--playlist-depth', '--playlist-name', '--playlist-prefix', '--title-prefix',
+  '--privacy', '--playlist-privacy', '--upload-log-file', '--playlist-separator',
+  '--playlist-mode', '--sync-pages',
+]);
+
+for (let i = 0; i < argv.length; i++) {
+  const arg = argv[i];
+  if (arg === '--skip') opts.skip = true;
+  else if (arg === '--no-skip') opts.skip = false;
+  else if (arg === '--sync') opts.sync = true;
+  else if (arg === '--sync-only') { opts.sync = true; opts.syncOnly = true; }
+  else if (arg === '--upload-log') opts.uploadLog = true;
+  else if (arg === '--delete-on-success') opts.deleteOnSuccess = true;
+  else if (arg === '--dry-run') opts.dryRun = true;
+  else if (arg === '--headless') opts.headless = true;
+  else if (arg === '--headed') opts.headless = false;
+  else if (arg === '--sort') {
+    const next = argv[i + 1];
+    opts.order = next && !next.startsWith('-') ? (i++, next) : 'name_asc';
+  } else if (takesValue.has(arg)) {
+    opts[arg.replace(/^--/, '').replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = argv[++i];
+  } else if (arg.startsWith('-')) {
+    console.error(`unknown option: ${arg}`);
+    process.exit(1);
+  } else opts.paths.push(arg);
+}
+
+if (!opts.paths.length) {
+  console.error('no input path given (see --help)');
+  process.exit(1);
+}
+
+if (opts.headless === undefined) opts.headless = true;
+// Skipping known uploads is the default: re-running a tree must never duplicate
+// videos. Use --no-skip to force a re-upload.
+if (opts.skip === undefined) opts.skip = true;
+
+async function main() {
+  // A single input folder is the root; extra arguments are individual files.
+  const first = opts.paths[0];
+  const rootIsDir = fs.statSync(first).isDirectory();
+  const config = loadConfig(path.join(process.cwd(), 'upload.config.json'));
+
+  if (rootIsDir) config.root = path.resolve(first);
+  else config.root = path.dirname(path.resolve(first));
+
+  config.playlistDepth =
+    opts.playlistDepth !== undefined ? Number(opts.playlistDepth) : rootIsDir ? config.playlistDepth : 0;
+  if (opts.playlistName) config.playlistName = opts.playlistName;
+  if (opts.playlistPrefix) config.playlistPrefix = opts.playlistPrefix;
+  if (opts.titlePrefix) config.titlePrefix = opts.titlePrefix;
+  if (opts.privacy) config.videoPrivacy = opts.privacy;
+  if (opts.playlistPrivacy) config.playlistPrivacy = opts.playlistPrivacy;
+  if (opts.order) config.order = opts.order;
+  if (opts.playlistSeparator) config.playlistSeparator = opts.playlistSeparator;
+
+  if (!['public', 'unlisted', 'private'].includes(config.videoPrivacy)) {
+    console.error(`invalid --privacy: ${config.videoPrivacy}`);
+    process.exit(1);
+  }
+  if (!['public', 'unlisted', 'private'].includes(config.playlistPrivacy)) {
+    console.error(`invalid --playlist-privacy: ${config.playlistPrivacy}`);
+    process.exit(1);
+  }
+
+  const ledgerPath = path.resolve(
+    opts.uploadLogFile || path.join(config.root, '.youtube-upload-log.json')
+  );
+  const logEnabled = true;
+  const ledger = logEnabled ? loadLedger(ledgerPath) : { version: 1, records: [] };
+  const ledgerIndex = indexLedger(ledger, 'dest');
+  const hashCache = new Map();
+
+  const plan = rootIsDir
+    ? buildPlan(config)
+    : { playlists: [], orphans: opts.paths.map((p) => path.resolve(p)) };
+
+  const groups = [
+    ...plan.playlists.map((playlist) => ({ name: playlist.name, files: playlist.files, folder: playlist.folder })),
+    ...(plan.orphans.length ? [{ name: null, files: plan.orphans, folder: config.root }] : []),
+  ];
+
+  // Keep the full file list: syncing compares everything on disk with the
+  // channel, including files that the ledger will later skip.
+  const allGroups = groups.map((group) => ({ ...group, files: [...group.files] }));
+
+  const videoTitle = (file) =>
+    `${config.titlePrefix}${path.basename(file, path.extname(file))}`.slice(0, 100);
+
+  // Resolved before the dry run so the preview can name the playlist backend,
+  // without calling it.
+  const ytplaylists = require('./ytplaylists');
+  let playlistMode = opts.playlistMode || 'auto';
+  if (playlistMode === 'auto') playlistMode = ytplaylists.configured() ? 'api' : 'ui';
+
+  if (opts.sync) {
+    const { fetchChannelVideos, reconcile } = require('./sync');
+    console.log('syncing with YouTube Studio…');
+    const videos = await fetchChannelVideos({
+      headless: opts.headless,
+      maxPages: Number(opts.syncPages) || 100,
+    });
+    const expected = [];
+    for (const group of allGroups) {
+      for (const file of group.files) {
+        expected.push({ file, playlist: group.name || '', title: videoTitle(file) });
+      }
+    }
+    const { adopted, missing } = reconcile({ videos, ledger, expected });
+
+    // Adopted videos are added to the in-memory ledger even for a dry run so the
+    // preview then reports them as skipped, exactly like the real run; only the
+    // write is skipped.
+    for (const item of adopted) {
+      addRecord(ledger, item.file, config.root, {
+        playlist: item.playlist,
+        title: item.title,
+        link: `https://youtu.be/${item.video.id}`,
+        videoId: item.video.id,
+        adoptedFromStudio: true,
+      }, hashCache);
+    }
+    if (adopted.length && !opts.dryRun) saveLedger(ledgerPath, ledger);
+
+    console.log(
+      `channel: ${videos.length} video(s) | ${opts.dryRun ? 'would adopt' : 'adopted'}: ${adopted.length} | missing from channel: ${missing.length}`
+    );
+    for (const item of adopted) {
+      console.log(
+        `  ${opts.dryRun ? 'would adopt' : 'adopted'}: ${path.relative(config.root, item.file)} -> ${item.video.id}`
+      );
+    }
+    for (const record of missing) {
+      console.log(
+        `  no longer on channel: ${record.title || record.relPath || record.name} (${record.link || record.videoId || '?'})`
+      );
+    }
+
+    ledgerIndex.clear();
+    for (const record of ledger.records) {
+      const key = recordKey(record, 'dest');
+      if (key) ledgerIndex.set(key, record);
+      if (record.sha256) ledgerIndex.set(`sha256:${record.sha256}`, record);
+    }
+    if (opts.syncOnly) return;
+  }
+
+  let totalFiles = 0;
+  let skipped = 0;
+  let playlistCount = 0;
+  const skippedFiles = [];
+
+  for (const group of groups) {
+    const pending = [];
+    for (const file of group.files) {
+      if (opts.skip && isUploaded(file, config.root, ledgerIndex, 'dest', group.name, hashCache)) {
+        skipped++;
+        skippedFiles.push({ file, playlist: group.name || '' });
+      } else {
+        pending.push(file);
+      }
+    }
+    group.files = pending;
+    if (group.name && pending.length) playlistCount++;
+    totalFiles += pending.length;
+  }
+
+  // Videos on disk that the plan does not cover: root-level files while
+  // orphanVideos is "skip", and anything filtered out by includeNested. Reported
+  // instead of silently ignored.
+  const plannedFiles = new Set(allGroups.flatMap((group) => group.files));
+  const unplanned = rootIsDir
+    ? buildPlan({ ...config, playlistDepth: 0 }).orphans.filter((file) => !plannedFiles.has(file))
+    : [];
+  const unplannedReason = (file) =>
+    path.dirname(file) === config.root
+      ? 'root-level video; set "orphanVideos": "upload" to include it'
+      : `deeper than --playlist-depth ${config.playlistDepth} with includeNested false`;
+
+  const modeLabel =
+    {
+      api: 'Data API',
+      ui: 'Studio picker (existing playlists only)',
+      off: 'disabled',
+    }[playlistMode] || playlistMode;
+
+  const skipRecordFor = (file, playlist) => {
+    const fp = fileFingerprint(file, config.root);
+    return ledgerIndex.get(recordKey({ ...fp, playlist: playlist || '' }, 'dest'));
+  };
+
+  const printDryRun = () => {
+    console.log(`root: ${config.root}`);
+    console.log(`playlists: ${playlistCount} | videos: ${totalFiles} | skipped: ${skipped}`);
+    console.log(
+      `playlist mode: ${modeLabel} | video privacy: ${config.videoPrivacy} | playlist privacy: ${config.playlistPrivacy}`
+    );
+    if (playlistMode === 'api' && !ytplaylists.configured()) {
+      console.warn('warning: playlist mode api needs client_secret.json and token.json — run: node yt-oauth.js');
+    }
+
+    for (const group of groups) {
+      const skippedHere = skippedFiles.filter((entry) => entry.playlist === (group.name || ''));
+      if (!group.files.length && !skippedHere.length) continue;
+      const heading = group.name ? `playlist "${group.name}"` : 'no playlist';
+      console.log(`\n[${heading}] ${group.files.length} to upload, ${skippedHere.length} skipped`);
+      if (group.name) {
+        console.log(
+          `  playlist: ${
+            playlistMode === 'api'
+              ? `would create or reuse (${config.playlistPrivacy})`
+              : modeLabel
+          }`
+        );
+      }
+      for (const file of group.files) {
+        console.log(`  upload  ${path.relative(config.root, file)}  ->  "${videoTitle(file)}"`);
+      }
+      for (const entry of skippedHere) {
+        const record = skipRecordFor(entry.file, entry.playlist);
+        console.log(
+          `  skip    ${path.relative(config.root, entry.file)}  (${record?.link || 'already uploaded'})`
+        );
+      }
+    }
+
+    if (unplanned.length) {
+      console.log(`\nnot planned: ${unplanned.length} video(s) on disk would be ignored`);
+      for (const file of unplanned) {
+        console.log(`  ignore  ${path.relative(config.root, file)}  (${unplannedReason(file)})`);
+      }
+    }
+
+    if (!totalFiles && !skipped) console.log('\nnothing to upload');
+    console.log(`\nlog: ${ledgerPath} (not modified)`);
+    console.log('dry run: nothing created, uploaded, deleted or written');
+  };
+
+  if (opts.dryRun) {
+    printDryRun();
+    return;
+  }
+
+  console.log(`root: ${config.root}`);
+  console.log(`playlists: ${playlistCount} | videos: ${totalFiles} | skipped: ${skipped}`);
+  if (unplanned.length) {
+    console.warn(
+      `warning: ${unplanned.length} video(s) on disk are not covered by the plan — run --dry-run to list them`
+    );
+  }
+  for (const group of groups) {
+    if (!group.files.length) continue;
+    console.log(`\n[${group.name ? `playlist ${group.name}` : 'no playlist'}] ${group.files.length} video(s)`);
+    for (const file of group.files) console.log(`  ${path.relative(config.root, file)}`);
+  }
+
+  // Playlists: create/verify them before uploading so the run fails early if the
+  // API is misconfigured. The Studio playlist picker is unreliable across UI
+  // revisions, so the Data API is the supported path for creating playlists.
+  if (playlistMode === 'api' && !ytplaylists.configured()) {
+    console.error('\nplaylist mode "api" needs client_secret.json and token.json — run: node yt-oauth.js');
+    process.exit(1);
+  }
+
+  const playlistIds = new Map();
+  if (playlistMode === 'api') {
+    const needed = [...new Set(groups.filter((group) => group.name && group.files.length).map((group) => group.name))];
+    if (needed.length) console.log('\nensuring playlists…');
+    for (const name of needed) {
+      try {
+        const playlist = await ytplaylists.ensurePlaylist(name, config.playlistPrivacy);
+        playlistIds.set(name, playlist.id);
+        console.log(`  ${playlist.id}  ${playlist.privacy}  ${name}`);
+      } catch (error) {
+        console.error(`  playlist "${name}" failed: ${error.message}`);
+      }
+    }
+
+    // Repair uploads from interrupted runs: the video exists and is in the log,
+    // but the playlist add never happened.
+    const unadded = ledger.records.filter(
+      (record) => record.videoId && record.playlist && !record.playlistAddedAt && !record.adoptedFromStudio
+    );
+    for (const record of unadded) {
+      try {
+        let playlistId = playlistIds.get(record.playlist);
+        if (!playlistId) {
+          const playlist = await ytplaylists.ensurePlaylist(record.playlist, config.playlistPrivacy);
+          playlistId = playlist.id;
+          playlistIds.set(record.playlist, playlistId);
+        }
+        await ytplaylists.addVideoToPlaylist(playlistId, record.videoId);
+        record.playlistAddedAt = new Date().toISOString();
+        saveLedger(ledgerPath, ledger);
+        console.log(`  repaired playlist "${record.playlist}" <- ${record.videoId}`);
+      } catch (error) {
+        console.warn(`  playlist repair failed for ${record.title || record.videoId}: ${error.message}`);
+      }
+    }
+  } else if (playlistMode === 'ui' && groups.some((group) => group.name && group.files.length)) {
+    console.warn(
+      '\nplaylist mode "ui": Studio cannot create playlists reliably; existing playlists only.\n' +
+        'Run "node yt-oauth.js" once to create and manage playlists via the Data API.'
+    );
+  }
+
+  if (!totalFiles) {
+    console.log('\nnothing to upload');
+    return;
+  }
+
+  const videos = [];
+  const videoPlaylists = new Map();
+  for (const group of groups) {
+    for (const file of group.files) {
+      if (group.name) videoPlaylists.set(file, group.name);
+      videos.push({
+        path: file,
+        title: videoTitle(file),
+        description: config.description || '',
+        publishType: config.videoPrivacy,
+        isNotForKid: true,
+        playlist: playlistMode === 'api' ? undefined : group.name || undefined,
+        playlistPrivacy: config.playlistPrivacy,
+        onSuccess: (link) => {
+          console.log(`  uploaded: ${link}`);
+          if (!logEnabled) return;
+          addRecord(ledger, file, config.root, {
+            playlist: group.name || '',
+            link,
+            title: videoTitle(file),
+            videoId: (link.match(/(?:youtu\.be\/|v=)([\w-]{6,})/) || [])[1] || undefined,
+          }, hashCache);
+          saveLedger(ledgerPath, ledger);
+          if (opts.deleteOnSuccess) {
+            try {
+              fs.unlinkSync(file);
+              console.log(`  deleted: ${file}`);
+            } catch (error) {
+              console.warn(`  could not delete ${file}: ${error.message}`);
+            }
+          }
+        },
+      });
+    }
+  }
+
+  const { upload } = require('./dist'); // eslint-disable-line global-require
+  const links = await upload({ email: 'profile@localhost' }, videos, {
+    headless: opts.headless,
+    executablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome-unstable',
+    userDataDir: path.join(__dirname, 'yt-profile'),
+    ignoreDefaultArgs: ['--enable-automation'],
+    args: ['--no-sandbox', '--disable-blink-features=AutomationControlled'],
+  });
+
+  console.log(`\ndone: ${links.length}/${videos.length}`);
+  links.forEach((link, i) => console.log(`  ${videos[i].title}: ${link}`));
+
+  if (playlistMode === 'api') {
+    for (let i = 0; i < links.length; i++) {
+      const video = videos[i];
+      const link = String(links[i] || '');
+      const playlistName = videoPlaylists.get(video?.path);
+      if (!playlistName) continue;
+      const playlistId = playlistIds.get(playlistName);
+      const videoId = (link.match(/(?:youtu\.be\/|v=)([\w-]{6,})/) || [])[1];
+      if (!playlistId || !videoId) {
+        console.warn(`  playlist "${playlistName}": could not add ${video.title}`);
+        continue;
+      }
+      try {
+        await ytplaylists.addVideoToPlaylist(playlistId, videoId);
+        const record = ledger.records.find((entry) => entry.link === link);
+        if (record) {
+          record.playlistAddedAt = new Date().toISOString();
+          saveLedger(ledgerPath, ledger);
+        }
+        console.log(`  playlist "${playlistName}" <- ${videoId}`);
+      } catch (error) {
+        console.warn(`  playlist "${playlistName}" add failed for ${video.title}: ${error.message}`);
+      }
+    }
+  }
+
+  if (logEnabled) console.log(`log: ${ledgerPath}`);
+}
+
+main().catch((error) => {
+  console.error(`failed: ${error?.message || error}`);
+  process.exit(1);
+});

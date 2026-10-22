@@ -5,6 +5,7 @@ export interface Video {
     tags?: string[]
     language?: string
     playlist?: string
+    playlistPrivacy?: 'public' | 'unlisted' | 'private'
     function?: any
     thumbnail?: string
     publishType?: 'PRIVATE' | 'UNLISTED' | 'PUBLIC'
@@ -18,8 +19,6 @@ export interface Video {
     isChannelMonetized?: boolean
     gameTitleSearch?: string
     publishToSubscriptionFeedAndNotifySubscribers?: boolean
-    automaticPlaces?: boolean
-    alteredContent?: boolean
     gameSelector?: ( arg0: GameData ) => Promise<boolean> | null
 }
 

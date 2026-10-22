@@ -1,5 +1,9 @@
 <h1 align="center">Youtube Videos Uploader</h1>
 
+> **Folder-tree uploader (`ytup`)**: this fork adds a headless CLI that turns
+> folders into playlists (with playlist privacy), resumes interrupted runs, skips
+> already-uploaded files, and syncs with the channel. See [YTUP.md](YTUP.md).
+
 <p align="center">
   <img width="460" height="300" src="assets/youtube.png">
 
@@ -9,7 +13,9 @@
 
 **In the name of God, who has guided me to do this work**
 
-**Note1:** In case you find any issue, please consider creating a PR to fix the issue.<br>
+**Note1:** In case you find any issue, please raise an [issue](https://github.com/fawazahmed0/youtube-uploader/issues/new/choose), So that I can fix it.<br>
+  
+Please star this repo by clicking on [:star: button](#) above [:arrow_upper_right:](#)
 
 ### Features:
 - No upload Limits (50+ videos/day limit set by youtube for every channel)
@@ -122,7 +128,7 @@ comment(credentials, [comment1], {headless:false}).then(console.log)
 - [DaddyFrosty](https://github.com/DaddyFrosty) - For [Path Escaping](https://github.com/fawazahmed0/youtube-uploader/pull/55), [Skip Processing wait](https://github.com/fawazahmed0/youtube-uploader/pull/57), [onProgress event](https://github.com/fawazahmed0/youtube-uploader/pull/60), [Show More being toggled incorrectly…](https://github.com/fawazahmed0/youtube-uploader/pull/180) and [Added support for selecting "Gaming" category aswell as game.](https://github.com/fawazahmed0/youtube-uploader/pull/182)
 - [Owl Burger](https://github.com/Zebraslive) - For [Create Channel](https://github.com/fawazahmed0/youtube-uploader/pull/66)
 - [Ítalo Andrade](https://github.com/italodeandra) - For [Channel Switcher](https://github.com/fawazahmed0/youtube-uploader/pull/73)
-- [Dominic Findlay](https://github.com/DominicFindlay) - For Supporting [Single Quotes in playlist name](https://github.com/fawazahmed0/youtube-uploader/pull/82), [skip processing bug fix](https://github.com/fawazahmed0/youtube-uploader/pull/162), [wait for upload complete](https://github.com/fawazahmed0/youtube-uploader/pull/225) and [Prechecks Dialog skip](https://github.com/fawazahmed0/youtube-uploader/pull/266)
+- [Dominic Findlay](https://github.com/DominicFindlay) - For Supporting [Single Quotes in playlist name](https://github.com/fawazahmed0/youtube-uploader/pull/82), [skip processing bug fix](https://github.com/fawazahmed0/youtube-uploader/pull/162) and [wait for upload complete](https://github.com/fawazahmed0/youtube-uploader/pull/225)
 - [Dement6d](https://github.com/dement6d) - For [Better error messages](https://github.com/fawazahmed0/youtube-uploader/pull/99) & [handling 2FA](https://github.com/fawazahmed0/youtube-uploader/pull/101)
 - [coooo77](https://github.com/coooo77) - For [uploading videos as draft option](https://github.com/fawazahmed0/youtube-uploader/pull/105)
 - [L1teleau](https://github.com/L1teleau) - For [upload limit reached message](https://github.com/fawazahmed0/youtube-uploader/pull/115)
@@ -138,7 +144,6 @@ comment(credentials, [comment1], {headless:false}).then(console.log)
 - [Soubhik Biswas](https://github.com/s0ubhik) - For [fixing home page selector](https://github.com/fawazahmed0/youtube-uploader/pull/229)
 - [pm96](https://github.com/pm96) - For [publishToSubscriptionFeedAndNotifySubscribers](https://github.com/fawazahmed0/youtube-uploader/pull/232) option
 - [bmarotta](https://github.com/bmarotta) - For [Enhanced logs and workarounds](https://github.com/fawazahmed0/youtube-uploader/pull/236)
-- [nielsverheggen](https://github.com/nielsverheggen) - For [alteredContent](https://github.com/fawazahmed0/youtube-uploader/pull/265) and [automaticPlaces](https://github.com/fawazahmed0/youtube-uploader/pull/264) option
 
 
 <br>

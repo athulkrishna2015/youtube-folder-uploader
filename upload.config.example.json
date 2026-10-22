@@ -1,0 +1,15 @@
+{
+  "playlistDepth": 1,
+  "playlistName": "leaf",
+  "playlistSeparator": " / ",
+  "playlistPrefix": "",
+  "titlePrefix": "",
+  "videoPrivacy": "unlisted",
+  "playlistPrivacy": "unlisted",
+  "order": "name_asc",
+  "includeNested": true,
+  "orphanVideos": "skip",
+  "skipAlreadyUploaded": true,
+  "ledger": ".youtube-upload-log.json",
+  "videoExtensions": [".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".flv", ".wmv"]
+}
