@@ -444,7 +444,7 @@ Prints the playlist id, privacy and its video ids/titles via the Data API.
 | `invalid --privacy` | Values are exactly `public`, `unlisted`, `private`. |
 | `playlist mode "api" needs client_secret.json and token.json` | Create the OAuth client and run `node yt-oauth.js`, or use `--playlist-mode off` if you do not want playlists. |
 | Studio shows the login page during upload | The profile's cookies cannot be decrypted. Re-run `node yt-login.js`; do not copy `yt-profile/` between machines. |
-| `SingletonLock` / profile in use | Chrome crashed earlier. Remove `yt-profile/SingletonLock`, `SingletonLockSocket` and `DevToolsActivePort`. |
+| `SingletonLock` / `connect ECONNREFUSED` | A crashed run left Chrome holding the profile. `ytup` now kills Chrome processes bound to `yt-profile/` and removes `SingletonLock`, `SingletonSocket` and `DevToolsActivePort` automatically at startup and on failure/interrupt. Remove them by hand only if the process was killed with `SIGKILL`. |
 | Upload ends as "Processing abandoned" | YouTube rejects very short or truncated files (a few KB). Use complete videos. |
 | "We're still checking your content" dialog | Dismissed automatically with **Publish anyway**, exactly like doing it by hand. |
 | Video title is doubled (`clipclip`) | Fixed: Studio's pre-filled title is replaced with select-all + Backspace. Rebuild with `npx tsc -p .`. |

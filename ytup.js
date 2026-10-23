@@ -109,7 +109,72 @@ if (!opts.paths.length) {
 
 if (opts.headless === undefined) opts.headless = true;
 
+const PROFILE_DIR = path.join(__dirname, 'yt-profile');
+
+// A crashed or interrupted run can leave Chrome holding the profile and a dead
+// DevTools port behind, which makes the next launch fail with ECONNREFUSED.
+// Kill only Chrome processes that use this profile, then drop the lock files.
+function cleanChromeProfile(reason = '') {
+  const killed = [];
+  try {
+    for (const entry of fs.readdirSync('/proc')) {
+      if (!/^\d+$/.test(entry)) continue;
+      const pid = Number(entry);
+      if (pid === process.pid) continue;
+      let cmdline;
+      try {
+        cmdline = fs.readFileSync(`/proc/${entry}/cmdline`, 'utf8');
+      } catch (_) {
+        continue;
+      }
+      if (!cmdline.includes(PROFILE_DIR)) continue;
+      try {
+        process.kill(pid, 'SIGKILL');
+        killed.push(pid);
+      } catch (_) {
+        // Already gone.
+      }
+    }
+  } catch (_) {
+    // /proc is Linux-only; on other systems the lock files are still removed.
+  }
+
+  for (const name of ['SingletonLock', 'SingletonSocket', 'DevToolsActivePort']) {
+    try {
+      fs.rmSync(path.join(PROFILE_DIR, name), { force: true });
+    } catch (_) {
+      // Best effort.
+    }
+  }
+  if (killed.length) {
+    console.warn(`${reason}cleaned stale Chrome (${killed.join(', ')}) and the profile locks`);
+  }
+}
+
+function installChromeCleanup() {
+  process.on('exit', () => cleanChromeProfile());
+  process.on('SIGINT', () => {
+    cleanChromeProfile('interrupted: ');
+    process.exit(130);
+  });
+  process.on('SIGTERM', () => {
+    cleanChromeProfile('terminated: ');
+    process.exit(143);
+  });
+  process.on('uncaughtException', (error) => {
+    console.error(error && error.stack ? error.stack : error);
+    cleanChromeProfile('after error: ');
+    process.exit(1);
+  });
+}
+
 async function main() {
+  // Dry runs must not touch anything, including stale browser state.
+  if (!opts.dryRun) {
+    installChromeCleanup();
+    cleanChromeProfile('startup: ');
+  }
+
   // A single input folder is the root; extra arguments are individual files.
   const first = opts.paths[0];
   const rootIsDir = fs.statSync(first).isDirectory();
