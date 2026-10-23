@@ -38,10 +38,9 @@ Options:
   --playlist-privacy VALUE  Playlist privacy: public | unlisted | private
                             [unlisted]
   --playlist-mode MODE      api: create/verify playlists and add videos with the
-                            YouTube Data API | ui: use Studio's existing
-                            playlists only | off: no playlist handling |
-                            auto: api when client_secret.json and token.json
-                            exist, otherwise ui [auto]
+                            YouTube Data API | ui: legacy alias for api | off: no
+                            playlist handling | auto: api when client_secret.json
+                            and token.json exist, otherwise off [auto]
   --sort [ORDER]            File order: name_asc | name_desc | mtime_asc |
                             mtime_desc | random [name_asc]
   --skip                    Skip files already in the upload log [default]
@@ -175,7 +174,16 @@ async function main() {
   // without calling it.
   const ytplaylists = require('./ytplaylists');
   let playlistMode = opts.playlistMode || 'auto';
-  if (playlistMode === 'auto') playlistMode = ytplaylists.configured() ? 'api' : 'ui';
+  if (playlistMode === 'ui') {
+    console.warn('playlist mode "ui" is a legacy alias: playlists are managed with the Data API.');
+    playlistMode = 'api';
+  }
+  if (playlistMode === 'auto') {
+    playlistMode = ytplaylists.configured() ? 'api' : 'off';
+    if (playlistMode === 'off') {
+      console.warn('playlists need OAuth (run: node yt-oauth.js); uploading without playlists');
+    }
+  }
 
   if (opts.sync) {
     const { fetchChannelVideos, reconcile } = require('./sync');
@@ -264,7 +272,6 @@ async function main() {
   const modeLabel =
     {
       api: 'Data API',
-      ui: 'Studio picker (existing playlists only)',
       off: 'disabled',
     }[playlistMode] || playlistMode;
 
@@ -383,11 +390,6 @@ async function main() {
         console.warn(`  playlist repair failed for ${record.title || record.videoId}: ${error.message}`);
       }
     }
-  } else if (playlistMode === 'ui' && groups.some((group) => group.name && group.files.length)) {
-    console.warn(
-      '\nplaylist mode "ui": Studio cannot create playlists reliably; existing playlists only.\n' +
-        'Run "node yt-oauth.js" once to create and manage playlists via the Data API.'
-    );
   }
 
   if (!totalFiles) {
@@ -406,7 +408,6 @@ async function main() {
         description: config.description || '',
         publishType: config.videoPrivacy,
         isNotForKid: true,
-        playlist: playlistMode === 'ui' ? group.name || undefined : undefined,
         playlistPrivacy: config.playlistPrivacy,
         onSuccess: (link) => {
           console.log(`  uploaded: ${link}`);

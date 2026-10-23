@@ -189,9 +189,9 @@ With `--playlist-prefix "Course: "` the names become "Course: Math" and
 | Mode | Behaviour |
 | --- | --- |
 | `api` | Creates missing playlists with `--playlist-privacy`, fixes the privacy of existing ones, and adds every uploaded video. Needs `client_secret.json` + `token.json`. |
-| `ui` | Uses Studio's playlist picker. Can only add to existing playlists; Studio cannot reliably create one with a chosen privacy. No OAuth needed. |
+| `ui` | Legacy alias for `api`, kept so older scripts keep working. Studio's playlist picker is no longer scriptable in current Studio builds, so it is never used. |
 | `off` | No playlist handling at all; uploads are flat. |
-| `auto` (default) | `api` when both OAuth files exist, otherwise `ui`. |
+| `auto` (default) | `api` when both OAuth files exist, otherwise `off` (with a warning at the start of the run). |
 
 Creating a playlist and adding a video to one cost 50 quota units each; the free
 10,000 units/day allow ~200 playlist operations. Video uploads do not consume
@@ -404,10 +404,10 @@ node ytup.js --playlist-mode api ~/Videos/Courses
 Videos that were published but never added to their playlist are repaired before
 any new upload starts.
 
-### Studio picker instead of the API
+### Legacy ui mode and no playlists
 
 ```bash
-node ytup.js --playlist-mode ui ~/Videos/Courses   # existing playlists only
+node ytup.js --playlist-mode ui ~/Videos/Courses   # legacy alias, same as api
 node ytup.js --playlist-mode off ~/Videos/Courses  # ignore playlists entirely
 ```
 
@@ -442,7 +442,7 @@ Prints the playlist id, privacy and its video ids/titles via the Data API.
 | --- | --- |
 | `no input path given` | Pass a folder or files; run `--help`. |
 | `invalid --privacy` | Values are exactly `public`, `unlisted`, `private`. |
-| `playlist mode "api" needs client_secret.json and token.json` | Create the OAuth client and run `node yt-oauth.js`, or use `--playlist-mode ui`. |
+| `playlist mode "api" needs client_secret.json and token.json` | Create the OAuth client and run `node yt-oauth.js`, or use `--playlist-mode off` if you do not want playlists. |
 | Studio shows the login page during upload | The profile's cookies cannot be decrypted. Re-run `node yt-login.js`; do not copy `yt-profile/` between machines. |
 | `SingletonLock` / profile in use | Chrome crashed earlier. Remove `yt-profile/SingletonLock`, `SingletonLockSocket` and `DevToolsActivePort`. |
 | Upload ends as "Processing abandoned" | YouTube rejects very short or truncated files (a few KB). Use complete videos. |
@@ -455,12 +455,35 @@ Prints the playlist id, privacy and its video ids/titles via the Data API.
 ## Tests
 
 ```bash
-node test-dry-run.js    # 12 cases: planning, skips, ledger immutability, no dist/
-node test-sync.js       # 8 cases: title matching, missing videos, path-independent keys
+npm test                  # offline suites below
+
+node test-dry-run.js      # 12 cases: planning, skips, ledger immutability, no dist/
+node test-sync.js         # 8 cases: title matching, missing videos, path-independent keys
+
+node test-upload-live.js  # real uploads + API verification (~25-40 min)
 ```
 
-Both are offline: no browser, no network, no channel changes. They create their
-trees under `/tmp/opencode` (override with `YTUP_TEST_DIR`).
+The offline suites use no browser, no network and change nothing on the channel.
+They create their trees under `/tmp/opencode` (override with `YTUP_TEST_DIR`).
+
+### Live upload tests
+
+`test-upload-live.js` really uploads short clips and checks the result through
+the Data API: playlist creation and privacy, membership, order, titles,
+roll-up/deepest assignment, depth 0, playlist modes `off` and the legacy
+`ui` alias, `--delete-on-success`, skip and `--no-skip`, and sync adoption. Every name is
+prefixed with a unique marker (`LIVE<stamp>`, override with `LIVE_STAMP`), and
+the run ends by confirming every uploaded title exists on the channel and that
+the ignored root-level file does not.
+
+It costs ~12 unlisted uploads and ~1,000 API quota units, and writes a report
+with every created playlist and video id. Remove that content afterwards:
+
+```bash
+node cleanup-live-tests.js /tmp/opencode/ytup-live-<stamp>.json --yes
+```
+
+Without `--yes` the cleanup script only lists what it would delete.
 
 ## Files
 
@@ -474,7 +497,7 @@ trees under `/tmp/opencode` (override with `YTUP_TEST_DIR`).
 | `yt-oauth.js` | One-time Desktop OAuth loopback flow → `token.json`. |
 | `yt-login.js` | Interactive sign-in into `yt-profile/`. |
 | `verify-playlist.js` | Print a playlist's contents (`node verify-playlist.js "Name"`). |
-| `src/upload.ts` | Chrome automation (patched library: headless, visibility UI, picker, titles). |
+| `src/upload.ts` | Chrome automation (patched library: headless, visibility UI, titles). |
 | `dist/` | Built library (`npx tsc -p .`), not committed. |
 | `test-dry-run.js`, `test-sync.js` | Offline tests. |
 | `client_secret.json`, `token.json`, `yt-profile/` | Credentials and session — gitignored. |

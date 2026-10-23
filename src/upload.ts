@@ -147,8 +147,6 @@ async function uploadVideo(videoJSON: Video, messageTransport: MessageTransport)
     const title = videoJSON.title
     const description = videoJSON.description
     const tags = videoJSON.tags
-    // For backward compatablility playlist.name is checked first
-    const playlistName = videoJSON.playlist
     const videoLang = videoJSON.language
     const gameTitleSearch = videoJSON.gameTitleSearch
     const thumb = videoJSON.thumbnail
@@ -316,39 +314,6 @@ async function uploadVideo(videoJSON: Video, messageTransport: MessageTransport)
     // There is no reason for this to be called. Also you should be using #toggle-button not going by the text...
     // const moreOption = await page.$x("//*[normalize-space(text())='Show more']")
     // await moreOption[0]?.click()
-
-    // Playlist handling is wrapped in a top-level try/catch so that playlist
-    // failures never abort the upload.  The video is already on YouTube at
-    // this point; losing it because of a playlist UI glitch is not acceptable.
-    try {
-        const playlistNames = Array.isArray(playlistName)
-            ? playlistName
-            : playlistName
-            ? [playlistName]
-            : []
-
-        for (const name of playlistNames) {
-            const playlistSet = await withTimeout(
-                addVideoToPlaylist(page, name, videoJSON.playlistPrivacy, messageTransport),
-                90000,
-                'playlist step'
-            )
-            if (playlistSet) {
-                messageTransport.debug(`  >> ${videoJSON.title} - Playlist set to ${name}`)
-            } else {
-                messageTransport.warn(`  >> ${videoJSON.title} - Failed setting playlist "${name}"`)
-            }
-        }
-    } catch (playlistError) {
-        messageTransport.warn(
-            `  >> ${videoJSON.title} - Playlist step failed (non-fatal, upload will continue): ${playlistError}`
-        )
-        // Dismiss any open dialog/dropdown that may have been left by the failed
-        // playlist step (addVideoToPlaylist already does this safely).
-        try {
-            await page.screenshot({ path: 'playlist-failed.png' })
-        } catch (_) {}
-    }
 
     if (!videoJSON.isNotForKid) {
         await page.click("tp-yt-paper-radio-button[name='VIDEO_MADE_FOR_KIDS_MFK']").catch(() => {})
@@ -1550,61 +1515,6 @@ async function clickExactText(localPage: Page, text: string): Promise<boolean> {
         return true
     }, text.trim().toLowerCase())
 }
-
-// Create a playlist from inside the upload dialog's playlist picker.
-async function addVideoToPlaylist(
-    localPage: Page,
-    playlistName: string,
-    _playlistPrivacy: string | undefined,
-    messageTransport: MessageTransport
-): Promise<boolean> {
-    const opened = await localPage.evaluate(() => {
-        const trigger =
-            document.querySelector('ytcp-video-metadata-playlists ytcp-dropdown-trigger') ||
-            document.querySelector('ytcp-video-metadata-playlists [role="button"]')
-        if (!trigger) return false
-        ;(trigger as HTMLElement).click()
-        return true
-    })
-    if (!opened) return false
-
-    let ok = false
-    try {
-        await localPage.waitForSelector('#search-input', { timeout: 15000 })
-        await localPage.click('#search-input')
-        await localPage.type('#search-input', playlistName, { delay: 20 })
-        await sleep(2000)
-
-        if (!(await clickExactText(localPage, playlistName))) {
-            messageTransport.warn(
-                `  >> playlist "${playlistName}" does not exist in Studio (create it with the Data API: node yt-oauth.js)`
-            )
-            return false
-        }
-
-        await sleep(1500)
-        await clickExactText(localPage, 'Done')
-        await sleep(1000)
-        ok = true
-        return true
-    } finally {
-        if (!ok) await closePlaylistPicker(localPage)
-    }
-}
-
-// Close the playlist picker without touching the surrounding upload dialog.
-async function closePlaylistPicker(localPage: Page): Promise<void> {
-    const pickerOpen = await localPage
-        .evaluate(() => {
-            const input = document.querySelector('#search-input') as HTMLInputElement | null
-            return !!input && /search for a playlist/i.test(input.placeholder || '')
-        })
-        .catch(() => false)
-    if (!pickerOpen) return
-    await localPage.keyboard.press('Escape').catch(() => {})
-    await sleep(800)
-}
-
 
 async function launchBrowser(puppeteerLaunch?: PuppeteerNodeLaunchOptions, loadCookies: boolean = true) {
     const chromePath = puppeteerLaunch?.executablePath || '/usr/bin/google-chrome'

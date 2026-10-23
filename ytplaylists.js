@@ -95,6 +95,34 @@ async function listPlaylists() {
   return playlists;
 }
 
+// Ordered contents of one playlist (playlistItems order = display order).
+async function listPlaylistItems(playlistId) {
+  const items = [];
+  let pageToken;
+  do {
+    const page = await api('playlistItems', {
+      query: { part: 'snippet,contentDetails', playlistId, maxResults: '50', pageToken },
+    });
+    for (const item of page.items || []) {
+      items.push({
+        videoId: item.contentDetails?.videoId || item.snippet?.resourceId?.videoId,
+        title: item.snippet?.title || '',
+        position: item.snippet?.position,
+      });
+    }
+    pageToken = page.nextPageToken;
+  } while (pageToken);
+  return items;
+}
+
+async function deletePlaylist(playlistId) {
+  await api('playlists', { method: 'DELETE', query: { id: playlistId } });
+}
+
+async function deleteVideo(videoId) {
+  await api('videos', { method: 'DELETE', query: { id: videoId } });
+}
+
 async function createPlaylist(title, privacy = 'unlisted') {
   const created = await api('playlists', {
     method: 'POST',
@@ -168,8 +196,11 @@ async function listChannelVideos() {
 module.exports = {
   configured,
   listPlaylists,
+  listPlaylistItems,
   createPlaylist,
   ensurePlaylist,
   addVideoToPlaylist,
   listChannelVideos,
+  deletePlaylist,
+  deleteVideo,
 };

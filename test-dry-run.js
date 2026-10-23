@@ -190,7 +190,7 @@ test('dry run works without a built dist/', () => {
   assert.ok(result.out.includes('upload  A/a1.mp4'), result.out);
 });
 
-test('playlist backend is named from the available credentials', () => {
+test('playlist backend follows the available credentials', () => {
   const inRepo = run(['--dry-run', '--playlist-depth', '1', flat], { cwd: repo });
   const sandbox = fs.mkdtempSync(path.join(tmpRoot, 'ytup-nocreds-'));
   for (const file of ['ytup.js', 'tree-plan.js', 'ledger.js', 'ytplaylists.js']) {
@@ -200,7 +200,7 @@ test('playlist backend is named from the available credentials', () => {
     cwd: sandbox,
     script: path.join(sandbox, 'ytup.js'),
   });
-  assert.ok(withoutCreds.out.includes('playlist mode: Studio picker (existing playlists only)'), withoutCreds.out);
+  assert.ok(withoutCreds.out.includes('playlist mode: disabled'), withoutCreds.out);
   if (fs.existsSync(path.join(repo, 'client_secret.json')) && fs.existsSync(path.join(repo, 'token.json'))) {
     assert.ok(inRepo.out.includes('playlist mode: Data API'), inRepo.out);
   }
