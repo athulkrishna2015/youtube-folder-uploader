@@ -88,6 +88,7 @@ async function listPlaylists() {
         id: item.id,
         title: item.snippet?.title || '',
         privacy: (item.status?.privacyStatus || '').toLowerCase(),
+        publishedAt: item.snippet?.publishedAt || '',
       });
     }
     pageToken = page.nextPageToken;
@@ -159,6 +160,16 @@ async function ensurePlaylist(title, privacy = 'unlisted', cache = new Map()) {
   return playlist;
 }
 
+async function renamePlaylist(playlistId, title) {
+  const updated = await api('playlists', {
+    method: 'PUT',
+    query: { part: 'snippet' },
+    body: { id: playlistId, snippet: { title } },
+  });
+  cachedList = null;
+  return { id: updated.id || playlistId, title };
+}
+
 async function addVideoToPlaylist(playlistId, videoId) {
   await api('playlistItems', {
     method: 'POST',
@@ -199,6 +210,7 @@ module.exports = {
   listPlaylistItems,
   createPlaylist,
   ensurePlaylist,
+  renamePlaylist,
   addVideoToPlaylist,
   listChannelVideos,
   deletePlaylist,
