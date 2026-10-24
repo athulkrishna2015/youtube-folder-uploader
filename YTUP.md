@@ -475,6 +475,8 @@ change); `--batch-size 0` disables the restarts.
 | "We're still checking your content" dialog | Dismissed automatically with **Publish anyway**, exactly like doing it by hand. |
 | Video title is doubled (`clipclip`) | Fixed: Studio's pre-filled title is replaced with select-all + Backspace. Rebuild with `npx tsc -p .`. |
 | Playlist not created | Check the OAuth project has **YouTube Data API v3** enabled and `token.json` belongs to the channel owner. |
+| `invalid authentication credentials` on playlist adds | The cached access token expired after an hour. Fixed: the token is refreshed before each API call and retried once on 401. If it still appears, re-run `node yt-oauth.js`. |
+| `Daily upload limit reached` | YouTube's per-channel upload cap, not the Data API quota. Wait for the reset (midnight Pacific) and re-run; already-uploaded videos are in the log and playlists are repaired first. |
 | `403 quotaExceeded` | The daily 10,000-unit API quota is spent (~200 playlist operations). Uploads still work; playlists resume tomorrow. |
 | Upload stops on the first failing video | Intentional: the error is reported and earlier successes are kept in the log; playlists for finished videos are still added, and re-running resumes. |
 

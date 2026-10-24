@@ -25,10 +25,10 @@ function loadClient() {
 
 let cached = null;
 
-async function accessToken() {
+async function accessToken(force = false) {
   const client = loadClient();
   const token = JSON.parse(fs.readFileSync(TOKEN_FILE, 'utf8'));
-  if (token.access_token && token.created_at && Date.now() - token.created_at < (token.expires_in - 60) * 1000) {
+  if (!force && token.access_token && token.created_at && Date.now() - token.created_at < (token.expires_in - 60) * 1000) {
     return token.access_token;
   }
 
@@ -56,19 +56,31 @@ async function accessToken() {
 }
 
 async function api(pathname, { method = 'GET', query = {}, body } = {}) {
-  if (!cached) cached = { token: await accessToken(), videos: new Map(), playlists: new Map() };
+  if (!cached) cached = { token: null, videos: new Map(), playlists: new Map() };
+  // Access tokens last an hour. A bulk upload run lasts longer than that, so
+  // check the token on every call instead of keeping the first one forever;
+  // accessToken() refreshes from token.json when it is close to expiring.
+  cached.token = await accessToken();
   const url = new URL(`${API}/${pathname}`);
   for (const [key, value] of Object.entries(query)) {
     if (value !== undefined && value !== null && value !== '') url.searchParams.set(key, value);
   }
-  const response = await fetch(url, {
-    method,
-    headers: {
-      authorization: `Bearer ${cached.token}`,
-      'content-type': 'application/json',
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  const send = () =>
+    fetch(url, {
+      method,
+      headers: {
+        authorization: `Bearer ${cached.token}`,
+        'content-type': 'application/json',
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  let response = await send();
+  if (response.status === 401) {
+    // The token looked fresh but the API rejected it (revoked, clock skew or a
+    // refresh that landed mid-flight). Refresh once and retry.
+    cached.token = await accessToken(true);
+    response = await send();
+  }
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
     throw new Error(`${method} ${pathname} failed: ${payload.error?.message || response.status}`);
