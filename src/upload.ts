@@ -12,6 +12,7 @@ import {
 import { connect, PageWithCursor } from 'puppeteer-real-browser'
 import { PuppeteerNodeLaunchOptions, Browser, Page } from 'puppeteer'
 import fs from 'fs-extra'
+import os from 'os'
 import path from 'path'
 
 const maxTitleLen = 100
@@ -24,6 +25,44 @@ const timeout = 60000
 // the window edge, where nothing can click them.
 const height = 1200
 const width = 1600
+
+// YouTube Studio keeps decorative CSS animations running for the whole upload,
+// so headless Chrome (software compositing) paints far more frames than the
+// upload needs. Finish every animation immediately instead of looping it.
+// Set YTUP_LOW_RESOURCE=0 to leave the page untouched.
+const lowResource = process.env.YTUP_LOW_RESOURCE !== '0'
+const calmCss = `*, *::before, *::after {
+  animation-duration: 0.001s !important;
+  animation-delay: 0s !important;
+  animation-iteration-count: 1 !important;
+}`
+
+async function calmAnimations(localPage: Page) {
+    if (!lowResource) return
+    await localPage.addStyleTag({ content: calmCss }).catch(() => {})
+}
+
+// Uploads are network-bound, so Chrome can yield the CPU to everything else on
+// the machine. Children spawned later (renderers) inherit the browser's nice.
+function lowerChromePriority(userDataDir?: string) {
+    if (!userDataDir) return
+    let entries: string[] = []
+    try {
+        entries = fs.readdirSync('/proc')
+    } catch {
+        return
+    }
+    for (const entry of entries) {
+        if (!/^\d+$/.test(entry)) continue
+        try {
+            const args = fs.readFileSync(`/proc/${entry}/cmdline`, 'utf8').split('\0')
+            if (!args.includes(`--user-data-dir=${userDataDir}`)) continue
+            os.setPriority(Number(entry), 10)
+        } catch {
+            // Already exited, or not our process.
+        }
+    }
+}
 
 let browser: Browser, page: PageWithCursor
 let cookiesDirPath: string
@@ -155,6 +194,7 @@ async function uploadVideo(videoJSON: Video, messageTransport: MessageTransport)
         window.onbeforeunload = null
     })
     await page.goto(uploadURL)
+    await calmAnimations(page)
 
     messageTransport.debug(`  >> ${videoJSON.title} - Upload URL opened`)
 
@@ -188,6 +228,7 @@ async function uploadVideo(videoJSON: Video, messageTransport: MessageTransport)
                 window.onbeforeunload = null
             })
             await page.goto(uploadURL)
+            await calmAnimations(page)
         }
     }
     // Remove hidden closebtn text
@@ -1537,6 +1578,7 @@ async function launchBrowser(puppeteerLaunch?: PuppeteerNodeLaunchOptions, loadC
             protocolTimeout: 0  // disable CDP timeout; let selector timeouts govern
         }
     })
+    lowerChromePriority((puppeteerLaunch as any)?.userDataDir)
 
     if (requestedHeadless === true || requestedHeadless === 'new') {
         // Studio serves an "unsupported browser" page to the HeadlessChrome UA, which also

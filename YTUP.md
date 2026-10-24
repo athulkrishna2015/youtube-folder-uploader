@@ -27,6 +27,7 @@ Paths are folders (their subfolders become playlists) or individual video files.
 - [Configuration file](#configuration-file)
 - [Examples](#examples)
 - [Environment](#environment)
+- [Resource use](#resource-use)
 - [Troubleshooting](#troubleshooting)
 - [Tests](#tests)
 - [Files](#files)
@@ -132,6 +133,7 @@ Every option, its values and its default:
 | `--upload-log-file FILE` | path | `<root>/.youtube-upload-log.json` | Where the ledger lives. |
 | `--delete-on-success` | flag | off | Delete each local file after it uploads successfully. |
 | `--dry-run` | flag | off | Preview, then stop. No browser, API calls or writes. |
+| `--batch-size N` | integer ≥ 0 | `25` | Restart Chrome every N uploads so one long session cannot accumulate memory. `0` keeps one browser for the whole run. |
 | `--headless` | flag | on | Run Chrome without a window. |
 | `--headed` | flag | — | Show the Chrome window (debugging). |
 | `--version` | flag | — | Print the version. |
@@ -433,8 +435,32 @@ Prints the playlist id, privacy and its video ids/titles via the Data API.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `CHROME_PATH` | `/usr/bin/google-chrome-unstable` | Chrome/Chromium binary used for uploads and `yt-login.js`. |
+| `YTUP_LOW_RESOURCE` | `1` | Set to `0` to disable the low-footprint Chrome tuning described under [Resource use](#resource-use). |
 
 `yt-login.js` also accepts `CHROME_PATH` and defaults to the same binary.
+
+## Resource use
+
+Bulk uploads run for hours and YouTube Studio is a heavy single-page app, so
+`ytup` keeps Chrome as small as it can without changing what gets uploaded:
+
+- Chrome runs at nice 10; other applications win when the CPU is contended.
+- Site images are not fetched and Studio's looping CSS animations are finished
+  immediately, cutting image-decode and repaint work.
+- Chrome is restarted every 25 uploads (`--batch-size`). A fresh browser
+  releases the renderer's accumulated DOM, image and JavaScript memory instead
+  of letting one session grow for the whole run. Each restart reuses the saved
+  profile, so no login is needed.
+- The process limit is lowered to two renderers: Studio only needs the page and
+  an occasional helper frame.
+
+What these do not change: YouTube itself keeps the upload dialog polling while
+a video is processed, which costs CPU and around 0.7-1.1 GB of renderer memory
+per browser session. On a small machine, closing other browsers and background
+apps during a long run helps more than any uploader flag.
+
+`YTUP_LOW_RESOURCE=0` turns the tuning off (useful when debugging a Studio UI
+change); `--batch-size 0` disables the restarts.
 
 ## Troubleshooting
 
@@ -450,7 +476,7 @@ Prints the playlist id, privacy and its video ids/titles via the Data API.
 | Video title is doubled (`clipclip`) | Fixed: Studio's pre-filled title is replaced with select-all + Backspace. Rebuild with `npx tsc -p .`. |
 | Playlist not created | Check the OAuth project has **YouTube Data API v3** enabled and `token.json` belongs to the channel owner. |
 | `403 quotaExceeded` | The daily 10,000-unit API quota is spent (~200 playlist operations). Uploads still work; playlists resume tomorrow. |
-| Upload stops on the first failing video | Intentional: the error is reported and earlier successes are kept in the log, so re-running resumes. |
+| Upload stops on the first failing video | Intentional: the error is reported and earlier successes are kept in the log; playlists for finished videos are still added, and re-running resumes. |
 
 ## Tests
 

@@ -110,6 +110,7 @@ ignored by default (set `"orphanVideos": "upload"` to include it).
 | `--sync` / `--sync-only` | off | Adopt channel videos, then upload (or stop). |
 | `--delete-on-success` | off | Delete each local file after it uploads. |
 | `--dry-run` | off | Preview and stop; nothing is created or written. |
+| `--batch-size N` | `25` | Restart Chrome every N uploads to bound memory. `0` never restarts. |
 | `--headless` / `--headed` | headless | Run Chrome without or with a window. |
 
 Every option, value, default and example is in **[YTUP.md](YTUP.md)**.

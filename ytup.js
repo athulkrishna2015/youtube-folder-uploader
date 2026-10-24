@@ -55,6 +55,8 @@ Options:
   --delete-on-success       Delete each local file after it uploads
   --dry-run                 Preview playlists, titles, skips and ignored files.
                             No browser, no API calls, no writes
+  --batch-size N            Restart Chrome every N uploads to keep its memory
+                            flat. 0 keeps one browser for the whole run [25]
   --headless                Run Chrome without a window [default]
   --headed                  Show the browser window
   --version                 Print the version
@@ -62,6 +64,9 @@ Options:
 
 Environment:
   CHROME_PATH               Chrome/Chromium binary [/usr/bin/google-chrome-unstable]
+  YTUP_LOW_RESOURCE         0 disables the low-CPU Chrome tuning (fewer
+                            processes, no site images, animations finished early,
+                            Chrome at nice 10) [1]
 `;
 
 const argv = process.argv.slice(2);
@@ -78,7 +83,7 @@ const opts = { paths: [] };
 const takesValue = new Set([
   '--playlist-depth', '--playlist-name', '--playlist-prefix', '--title-prefix',
   '--privacy', '--playlist-privacy', '--upload-log-file', '--playlist-separator',
-  '--playlist-mode', '--sync-pages',
+  '--playlist-mode', '--sync-pages', '--batch-size',
 ]);
 
 for (let i = 0; i < argv.length; i++) {
@@ -107,6 +112,15 @@ if (!opts.paths.length) {
   process.exit(1);
 }
 
+if (opts.batchSize !== undefined) {
+  const n = Number(opts.batchSize);
+  if (!Number.isInteger(n) || n < 0) {
+    console.error(`invalid --batch-size: ${opts.batchSize}`);
+    process.exit(1);
+  }
+  opts.batchSize = n;
+}
+
 if (opts.headless === undefined) opts.headless = true;
 
 const PROFILE_DIR = path.join(__dirname, 'yt-profile');
@@ -127,7 +141,7 @@ function cleanChromeProfile(reason = '') {
       } catch (_) {
         continue;
       }
-      if (!cmdline.includes(PROFILE_DIR)) continue;
+      if (!cmdline.split('\0').includes(`--user-data-dir=${PROFILE_DIR}`)) continue;
       try {
         process.kill(pid, 'SIGKILL');
         killed.push(pid);
@@ -498,13 +512,47 @@ async function main() {
   }
 
   const { upload } = require('./dist'); // eslint-disable-line global-require
-  const links = await upload({ email: 'profile@localhost' }, videos, {
+
+  const batchSize = opts.batchSize !== undefined ? opts.batchSize : 25;
+  const lowResource = process.env.YTUP_LOW_RESOURCE !== '0';
+  const launchOptions = {
     headless: opts.headless,
     executablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome-unstable',
     userDataDir: path.join(__dirname, 'yt-profile'),
     ignoreDefaultArgs: ['--enable-automation'],
-    args: ['--no-sandbox', '--disable-blink-features=AutomationControlled'],
-  });
+    args: [
+      '--no-sandbox',
+      '--disable-blink-features=AutomationControlled',
+      ...(lowResource
+        ? [
+            // Studio only needs one or two renderers, and the thumbnails and
+            // avatars are pure decoration for the upload flow. Keeping them
+            // out saves renderer memory and image-decode work.
+            '--renderer-process-limit=2',
+            '--blink-settings=imagesEnabled=false',
+          ]
+        : []),
+    ],
+  };
+
+  const links = [];
+  let uploadError;
+  const step = batchSize || videos.length;
+  const batches = Math.ceil(videos.length / step);
+  for (let start = 0; start < videos.length; start += step) {
+    const batch = videos.slice(start, start + step);
+    if (batches > 1) {
+      console.log(`\nbatch ${start / step + 1}/${batches}: ${batch.length} video(s), ${start + 1}..${start + batch.length} of ${videos.length}`);
+    }
+    try {
+      const batchLinks = await upload({ email: 'profile@localhost' }, batch, launchOptions);
+      links.push(...batchLinks);
+    } catch (error) {
+      // Keep whatever finished so the playlist pass below can still run.
+      uploadError = error;
+      break;
+    }
+  }
 
   console.log(`\ndone: ${links.length}/${videos.length}`);
   links.forEach((link, i) => console.log(`  ${videos[i].title}: ${link}`));
@@ -536,6 +584,7 @@ async function main() {
   }
 
   if (logEnabled) console.log(`log: ${ledgerPath}`);
+  if (uploadError) throw uploadError;
 }
 
 main().catch((error) => {
