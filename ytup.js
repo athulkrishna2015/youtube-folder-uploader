@@ -141,7 +141,10 @@ function cleanChromeProfile(reason = '') {
       } catch (_) {
         continue;
       }
-      if (!cmdline.split('\0').includes(`--user-data-dir=${PROFILE_DIR}`)) continue;
+      // Chrome rewrites the browser process argv as one space-joined string,
+      // so split on both NULs and spaces before comparing.
+      const args = cmdline.split('\0').flatMap((entry) => entry.split(' '));
+      if (!args.includes(`--user-data-dir=${PROFILE_DIR}`)) continue;
       try {
         process.kill(pid, 'SIGKILL');
         killed.push(pid);

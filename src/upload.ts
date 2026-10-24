@@ -55,7 +55,12 @@ function lowerChromePriority(userDataDir?: string) {
     for (const entry of entries) {
         if (!/^\d+$/.test(entry)) continue
         try {
-            const args = fs.readFileSync(`/proc/${entry}/cmdline`, 'utf8').split('\0')
+            // Chrome rewrites the browser process argv as one space-joined
+            // string, so split on both NULs and spaces before comparing.
+            const args = fs
+                .readFileSync(`/proc/${entry}/cmdline`, 'utf8')
+                .split('\0')
+                .flatMap((arg) => arg.split(' '))
             if (!args.includes(`--user-data-dir=${userDataDir}`)) continue
             os.setPriority(Number(entry), 10)
         } catch {
