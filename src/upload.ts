@@ -198,7 +198,7 @@ async function uploadVideo(videoJSON: Video, messageTransport: MessageTransport)
     await page.evaluate(() => {
         window.onbeforeunload = null
     })
-    await page.goto(uploadURL)
+    await page.goto(uploadURL, { waitUntil: 'domcontentloaded' })
     await calmAnimations(page)
 
     messageTransport.debug(`  >> ${videoJSON.title} - Upload URL opened`)
@@ -232,7 +232,7 @@ async function uploadVideo(videoJSON: Video, messageTransport: MessageTransport)
             await page.evaluate(() => {
                 window.onbeforeunload = null
             })
-            await page.goto(uploadURL)
+            await page.goto(uploadURL, { waitUntil: 'domcontentloaded' })
             await calmAnimations(page)
         }
     }
@@ -1303,22 +1303,28 @@ async function isAuthenticatedInCurrentProfile(
     localPage: Page,
     messageTransport: MessageTransport
 ): Promise<boolean> {
-    try {
-        await localPage.goto(studioURL)
+    // A timeout is not a logout: retry the load once before drawing that
+    // conclusion, and do not wait for every image and script before looking
+    // for the account controls.
+    for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+            await localPage.goto(studioURL, { waitUntil: 'domcontentloaded', timeout: timeout * 1.5 })
 
-        if (localPage.url && localPage.url().includes('accounts.google.com')) {
-            return false
-        }
+            if (localPage.url && localPage.url().includes('accounts.google.com')) {
+                return false
+            }
 
-        const authenticated = await waitForAnySelector(localPage, authenticatedProfileSelectors, 30000)
-        if (authenticated) {
-            messageTransport.log('Authenticated Chrome profile detected')
+            const authenticated = await waitForAnySelector(localPage, authenticatedProfileSelectors, 45000)
+            if (authenticated) {
+                messageTransport.log('Authenticated Chrome profile detected')
+            }
+            return authenticated
+        } catch (error) {
+            messageTransport.log(error)
+            if (attempt === 0) messageTransport.log('  >> retrying the Studio auth check')
         }
-        return authenticated
-    } catch (error) {
-        messageTransport.log(error)
-        return false
     }
+    return false
 }
 
 async function loadAccount(
@@ -1584,6 +1590,9 @@ async function launchBrowser(puppeteerLaunch?: PuppeteerNodeLaunchOptions, loadC
         }
     })
     lowerChromePriority((puppeteerLaunch as any)?.userDataDir)
+    // Studio is a heavy SPA and a slow first load used to hit Puppeteer's 30 s
+    // navigation default, which the auth probe then reported as "logged out".
+    page.setDefaultNavigationTimeout(timeout * 1.5)
 
     if (requestedHeadless === true || requestedHeadless === 'new') {
         // Studio serves an "unsupported browser" page to the HeadlessChrome UA, which also

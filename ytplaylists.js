@@ -25,6 +25,23 @@ function loadClient() {
 
 let cached = null;
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Google occasionally drops a connection mid-run ("fetch failed"); one blip
+// used to abort playlist creation. Retry network errors with a short backoff.
+async function fetchWithRetry(url, options, attempts = 3) {
+  let lastError;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      return await fetch(url, options);
+    } catch (error) {
+      lastError = error;
+      if (attempt + 1 < attempts) await sleep(1000 * (attempt + 1));
+    }
+  }
+  throw lastError;
+}
+
 async function accessToken(force = false) {
   const client = loadClient();
   const token = JSON.parse(fs.readFileSync(TOKEN_FILE, 'utf8'));
@@ -32,7 +49,7 @@ async function accessToken(force = false) {
     return token.access_token;
   }
 
-  const response = await fetch('https://oauth2.googleapis.com/token', {
+  const response = await fetchWithRetry('https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
@@ -66,7 +83,7 @@ async function api(pathname, { method = 'GET', query = {}, body } = {}) {
     if (value !== undefined && value !== null && value !== '') url.searchParams.set(key, value);
   }
   const send = () =>
-    fetch(url, {
+    fetchWithRetry(url, {
       method,
       headers: {
         authorization: `Bearer ${cached.token}`,
